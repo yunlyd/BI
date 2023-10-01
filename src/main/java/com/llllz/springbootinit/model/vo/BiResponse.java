@@ -2,7 +2,7 @@ package com.llllz.springbootinit.model.vo;
 
 /**
  * @create 2023-09-30-16:55
- * Bi 的返回结果
+ * BI 的返回结果
  */
 
 import lombok.Data;
