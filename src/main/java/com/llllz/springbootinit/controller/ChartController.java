@@ -1,5 +1,7 @@
 package com.llllz.springbootinit.controller;
 
+import com.llllz.springbootinit.manager.RedisLimiterManager;
+import cn.hutool.core.io.FileUtil;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.google.gson.Gson;
@@ -9,16 +11,13 @@ import com.llllz.springbootinit.common.DeleteRequest;
 import com.llllz.springbootinit.common.ErrorCode;
 import com.llllz.springbootinit.common.ResultUtils;
 import com.llllz.springbootinit.constant.CommonConstant;
-import com.llllz.springbootinit.constant.FileConstant;
 import com.llllz.springbootinit.constant.UserConstant;
 import com.llllz.springbootinit.exception.BusinessException;
 import com.llllz.springbootinit.exception.ThrowUtils;
 import com.llllz.springbootinit.manager.AiManager;
 import com.llllz.springbootinit.model.dto.chart.*;
-import com.llllz.springbootinit.model.dto.file.UploadFileRequest;
 import com.llllz.springbootinit.model.entity.Chart;
 import com.llllz.springbootinit.model.entity.User;
-import com.llllz.springbootinit.model.enums.FileUploadBizEnum;
 import com.llllz.springbootinit.model.vo.BiResponse;
 import com.llllz.springbootinit.service.ChartService;
 import com.llllz.springbootinit.service.UserService;
@@ -29,12 +28,15 @@ import org.apache.commons.lang3.ObjectUtils;
 import org.apache.commons.lang3.RandomStringUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.BeanUtils;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
 import javax.annotation.Resource;
 import javax.servlet.http.HttpServletRequest;
 import java.io.File;
+import java.util.Arrays;
+import java.util.List;
 
 /**
  * 图表接口
@@ -52,6 +54,9 @@ public class ChartController {
 
     @Resource
     private UserService userService;
+
+    @Resource
+    private RedisLimiterManager redisLimiterManager;
 
     private final static Gson GSON = new Gson();
 
@@ -264,8 +269,42 @@ public class ChartController {
         ThrowUtils.throwIf(StringUtils.isBlank(goal), ErrorCode.PARAMS_ERROR, "目标为空");
         // 如果名称不为空，并且名称长度大于100，就抛出异常，并给出提示
         ThrowUtils.throwIf(StringUtils.isNotBlank(name) && name.length() > 100, ErrorCode.PARAMS_ERROR, "名称过长");
+
+        /**
+         * 校验文件
+         *
+         * 首先,拿到用户请求的文件;
+         * 取到原始文件大小
+         */
+        long size = multipartFile.getSize();
+        // 取到原始文件名
+        String originalFilename = multipartFile.getOriginalFilename();
+
+        /**
+         * 校验文件大小
+         *
+         * 定义一个常量表示1MB;
+         * 一兆(1MB) = 1024*1024字节(Byte) = 2的20次方字节
+         */
+        final long ONE_MB = 1024 * 1024L;
+        // 如果文件大小,大于一兆,就抛出异常,并提示文件超过1M
+        ThrowUtils.throwIf(size > ONE_MB, ErrorCode.PARAMS_ERROR, "文件超过 1M");
+
+        /**
+         * 校验文件后缀(一般文件是aaa.png,我们要取到.<点>后面的内容)
+         *
+         * 利用FileUtil工具类中的getSuffix方法获取文件后缀名(例如:aaa.png,suffix应该保存为png)
+         */
+        String suffix = FileUtil.getSuffix(originalFilename);
+        // 定义合法的后缀列表
+        final List<String> validFileSuffixList = Arrays.asList("png", "jpg", "svg", "webp", "jpeg","xlsx");
+        // 如果suffix的后缀不在List的范围内,抛出异常,并提示'文件后缀非法'
+        ThrowUtils.throwIf(!validFileSuffixList.contains(suffix), ErrorCode.PARAMS_ERROR, "文件后缀非法");
+
         // 通过response对象拿到用户id(必须登录才能使用)
         User loginUser = userService.getLoginUser(request);
+
+        redisLimiterManager.doRateLimit("genChartByAi_" + loginUser.getId());
 
         // 指定一个模型id(把id写死，也可以定义成一个常量)
         long biModelId = 1708077353701609474L;
@@ -308,8 +347,8 @@ public class ChartController {
             throw new BusinessException(ErrorCode.SYSTEM_ERROR, "AI 生成错误");
         }
 
-        String genChart = splits[1];
-        String genResult = splits[2];
+        String genChart = splits[1].trim();
+        String genResult = splits[2].trim();
         // 插入到数据库
         Chart chart = new Chart();
         chart.setName(name);
